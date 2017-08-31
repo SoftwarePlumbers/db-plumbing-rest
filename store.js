@@ -1,72 +1,191 @@
-/** @module db-plumbing-map
+/** @module db-plumbing-rest
  *
  */
 'use strict';
 
-const debug = require('debug')('db-plumbing-map');
+require('isomorphic-fetch')
 
-/** Default comparison operation.
+const debug = require('debug')('db-plumbing-rest');
+const debugResponses = require('debug')('db-plumbing-rest~response');
+const { DoesNotExist } = require('db-plumbing-map');
+
+
+
+/** Default options for HTTP operations.
  *
- * @param key {Function{} function that extracts a key value (number or string) from a stored object
- * @param a First object
- * @param b Second object
- * @returns -1, 1, 0 depending on whether a < b, b < a, or a == b
+ * In the form of an object with attributes per the method column in table below. Each attribute
+ * contains an object with attributes per the related row in the table below.
  *
+ * | method     | mode | cache   |
+ * |------------|------|---------|
+ * | GET        | cors | default |
+ * | DELETE     | cors |         |
+ * | POST       | cors |         |
+ * | PUT        | cors |         |
  */
-function defaultComparator(key, a, b) {
-    if (key(a) < key(b)) return -1;
-    if (key(a) > key(b)) return 1;
-    return 0;
-}
+const DEFAULT_OPTIONS = {
+    GET: {
+        method: 'GET',
+        mode: 'cors',
+        cache: 'default'
+    },
 
-/** Utility function used to inject log operations into promise chain
- *
- * @param e value to log
- * @returns e
- */
-function logValue(e) {
-    debug('lv',e);
-    return e[1];
-}
+    DELETE: {
+        method: 'DELETE',
+        mode: 'cors'
+    },
 
-/** Error type (used when find() cannot return)
+    POST: {
+        method: 'POST',
+        model: 'cors'
+    },
+
+    PUT: {
+        method: 'PUT',
+        model: 'cors'
+    }
+};
+
+/** Default headers
 *
+* For now, just a Content-Type of 'application/json'
 */
-class DoesNotExist extends Error {
+const DEFAULT_HEADERS = {
+    'Content-Type': 'application/json'
+};
+    
 
-    /** Constructor
-    *
-    * @param key key for which an item cannot be found
-    */
-    constructor(key) { super(`${key} does not exist`); this.key = key; }
+/** Generic handler for response
+*
+* Checks whether the response status code is ok. Further checks to see
+* that the response payload is parsable json. Throws Error if not, and also logs warnings.
+*/
+function checkStatus(response) {
+    if (response.status == 204) {
+        return true;
+    }
+    if (response.status == 200) {
+        try {
+            return response.json();
+        } catch (err) {
+            console.warn('ServiceClient.checkStatus - couldn\'t parse', response.text());
+            throw new Error('unknown response from server');
+        }
+    }
+
+    let error;
+    console.warn('checkStatus', response.statusText);
+
+    if (response.status == 404)
+        error = new DoesNotExist(response.statusText);
+    else 
+        error = new Error(response.statusText);
+
+    error.response = response;
+    throw error;
 }
 
-/** In-memory document store.
+
+function debugInline(msg) {
+    return data => { debug(msg, data); return data; };
+}
+
+
+function debugResponse(response) {
+    debugResponses('response', response); 
+    return response;
+}
+
+class IndexMap {
+
+    /** Add a mapping for a simple single-field index 
+    * 
+    * @param index the named index function
+    * @param name the name of the field as it will be encoded in an HTTP service request
+    */
+    addSimpleField(index, name) {
+        this[index.name] = value => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`;
+        return this;
+    }
+}
+
+/** REST document store.
  *
- * Essentially just some utility functions wrapping an ES6 Map. Other implementations (db-plumbing-mongo etc) have the
- * same signature and should work as a drop-in replacement.
+ * Provide remote access to a document store via a REST api (such as that provided by db-plumbing-rest-server) 
+ * Other implementations (db-plumbing-mongo etc) have the same signature and should work as a drop-in replacement.
  */
 class Store {
 
-    static get DoesNotExist() { return DoesNotExist; }
-
     /** Constructor.
     * 
-    * Only the first parameter is mandatory. Default behavior is to look for an attribute uid in the object to 
-    * use as the unique key, and assume uid can be compared with standard comparison operations (basically it must
-    * be a string or a number).
+    * The class indicate by the constructor should supprt a static fromJSON method.
     *
-    *
-    * @param type {Function} a constructor (perhaps a base class constructor) for elements in this store.
-    * @param key {Function} a function that extracts a unique key from objects in this store
-    * @param comparator {Function} a function that compares two objects in this store
+    * @param client {Client} http client wrapping server info and authentication data
+    * @param endpoint {String} path for the data service on the remote server
+    * @param type {Function} constructor (maybe base class constructor) for objects in this store
     */ 
-    constructor(type, key = e=>e.uid, comparator = (a,b) => defaultComparator(key,a,b)) {
-        this.idMap = new Map();
-        this.key = key;
-        this.comparator = comparator;
-        this.sorted = true;
+    constructor(client, endpoint, type, index_map = new IndexMap()) {
+        debug('ServiceStore - constructor', endpoint, type.name);
+        this.client = client;
+        this.endpoint = endpoint;
         this.type = type;
+        this.index_map = index_map;
+    } 
+
+    /** Raw get operation */
+    _doGet(url, resultmap) {
+        let request = this.client.getGetRequest(url);
+        debug('ServiceStore - GET', url);
+
+        return fetch(request)
+            .then(debugResponse)
+            .then(checkStatus)
+            .then(debugInline('body'))
+            .then(resultmap)
+            .then(debugInline('returns'));
+
+    }
+
+    /** Raw post operation */
+    _doPost(url, object) {
+        let request = this.client.getPostRequest(url,object);
+        debug('_doPost', url, object);
+        return fetch(request)
+            .then(debugResponse)
+            .then(checkStatus)
+            .then(debugInline('returns'));
+    }
+
+    /** Raw put operation */
+    _doPut(url, object) {
+        let request = this.client.getPutRequest(url,object);
+        debug('_doPut', url, object);
+        return fetch(request)
+            .then(debugResponse)
+            .then(checkStatus)
+            .then(debugInline('returns'));
+    }
+    
+    /** Raw delete operation */
+    _doDelete(url) {
+        debug.log('_doDelete', url);
+        return fetch(this.client.getDeleteRequest(url))
+            .then(debugResponse)
+            .then(checkStatus)
+            .then(debugInline('returns'));
+    }
+
+    _singleResourceURI(uid) {
+        return `${this.endpoint}/items/${encodeURIComponent(uid)}`;
+    }
+    
+    _multipleResourceURI(op, index, value) {
+        debug('>>>', index.name, this.index_map)
+        return `${this.endpoint}/${op}/${index.name}?${this.index_map[index.name](value)}`;
+    }
+
+    _bulkResourceURI() {
+        return `${this.endpoint}/bulk`;
     }
 
     /** Find an object by its unique key
@@ -76,23 +195,16 @@ class Store {
     */
     find(key) { 
         debug('find', key);
-        let val = this.idMap.get(key);
-        return val === undefined ? Promise.reject(new DoesNotExist(key)) : Promise.resolve(val);
+        return this._doGet( this._singleResourceURI(key), result => this.type.fromJSON(result))
+            .then(debugInline('find - returns')); 
     }
 
-    /** Get all objects in the store
-    *
-    * @returns a promise resovled with an array contianing all values in the store
-    */
-    get all() {
-        debug('all');
-        return Promise.resolve(Array.from(this.idMap.values()));
-    }
+
 
     /** Find objects by index
     *
     * Index is, by convention, an named function (value, item) => boolean and the result of store.findAll(index,value)
-    * should be equivalent to store.all().filter(item => index(value, item)). However, other implementations of store
+    * should be equivalent to store.all.filter(item => index(value, item)). However, other implementations of store
     * may optimize this algorithm to use a better algorithm than a simple linear search. The distinct 'findAll' method
     * allows for that.
     *
@@ -100,8 +212,10 @@ class Store {
     * @returns A promise of an array containing all elements for which the function returns true for the given value
     */ 
     findAll(index, value)  { 
-        debug('findAll', index, value);
-        return this.all.then(all => all.filter(item => index(value, item))); 
+        console.assert(typeof index === 'function', 'index must be a function');
+        debug('findAll', index.name, value);
+        return this._doGet(this._multipleResourceURI('findAll',index,value), 
+            result => result.map(item => this.type.fromJSON(item)));
     }
 
     /** Update or add an object in the store.
@@ -110,10 +224,8 @@ class Store {
     * @returns a resolved promise.
     */
     update(object) { 
-        debug('Update',object);
-        if (!this.idMap.has(object.uid)) this.sorted = false;
-        this.idMap.set(object.uid, object); 
-        return Promise.resolve(true);
+        debug('update', object);
+        return this._doPut(this._singleResourceURI(object.uid), object);
     }
 
     /** Remove an object from the store.
@@ -122,11 +234,8 @@ class Store {
     * @returns a promise that resolves to true if the object is removed, false otherwise.
     */
     remove(key)  { 
-        if (! this.idMap.get(key) === undefined) {
-            this.idMap.delete(key);
-            return Promise.resolve(true);
-        }
-        return Promise.resolve(false);
+        debug('remove', key);
+        return this._doDelete(this._singleResourceURI(key));
     }
 
     /** Remove multiple objects from the store
@@ -135,15 +244,8 @@ class Store {
     * @param a value that determines which objects are removed.
     */ 
     removeAll(index, value) {
-        return this.findAll(index,value)
-            .then(items => { 
-                if (items.length === 0) 
-                    return false;
-                else {
-                    for (let item in items) this.idMap.delete(item.uid);
-                    return true;
-                }
-            });
+        debug('removeAll', index, value);
+        return this._doDelete(this._multipleResourceURI('removeAll',index, value));
     }
 
     /** Execute multiple update operations on the store
@@ -153,16 +255,108 @@ class Store {
     */
     bulk(patch) {
         debug('bulk', patch);
-        debug('bulk - this.sorted', this.sorted);
-        debug('bulk - before', this.idMap);
-        this.idMap = patch.patch(this.idMap, { value: logValue, collectionElementType: this.type, sorted: this.sorted });
-        this.sorted = true;
-        debug('bulk - after', this.idMap);
+        return this._doPost(this._bulkResourceURI(), patch.toJSON());
+    }
+}
 
-        return Promise.resolve(patch.data.length);
+/** Encapsulates base URL for data source and authorization.
+ *
+ * e.g. 
+ * ```
+ * client = new Client('mysite/api', Client.getBearerAuthHeader(token));
+ * store = client.getStore('users',User);
+ * ```
+ * 
+ */
+class Client {
+
+    /** Utility function for creating bearer authoriztion Http header (e.g. for use with JWT)
+    */ 
+    static getBearerAuthHeader(token) {
+        return { Authorizaton: 'Bearer ' + token };
+    }
+    
+    /** Constructor
+    *
+    * @param base_url base URL for site data APIs
+    * @param headers, including authorization, to be merged with DEFAULT_HEADERS (@see DEFAULT_HEADERS)
+    * @param standard options to be merged with DEFAULT_OPTIONS (@see DEFAULT_OPTIONS) 
+    */
+    constructor(base_url, headers = {}, options = {}) {
+        debug('ServiceClient - constructor', base_url);
+        this.base_url = base_url;
+        this.options = Object.assign({}, DEFAULT_OPTIONS, options);
+        this.headers = Object.assign({}, DEFAULT_HEADERS, headers);
+    }
+
+    /** Get a get request
+    * 
+    * Create a get request using the fetch API for the specified URL relative to the base suppied in the constructor.
+    * @param url {String} url to operate on
+    * @returns fetch API request
+    */
+    getGetRequest(url) {
+        return this._addHeaders(new Request(this.base_url + url, this.options.GET));
+    }
+
+    /** Get a delete request
+    * 
+    * Create a delete request using the fetch API for the specified URL relative to the base suppied in the constructor.
+    * @param url {String} url to operate on
+    * @returns fetch API request
+    */
+    getDeleteRequest(url) {
+        return new Request(this.base_url + url, this._addHeaders(this.options.DELETE));
+    }
+
+    /** Get a post request
+    * 
+    * Create a post request using the fetch API for the specified URL relative to the base suppied in the constructor.
+    * @param url {String} url to operate on
+    * @param obj json request body
+    * @returns fetch API request
+    */
+    getPostRequest(url,obj) {
+        return this._addBody(this._addHeaders(new Request(this.base_url + url, this.options.POST)), obj);
+    }
+
+    /** Get a put request
+    * 
+    * Create a put request using the fetch API for the specified URL relative to the base suppied in the constructor.
+    * @param url {String} url to operate on
+    * @param obj json request body
+    * @returns fetch API request
+    */
+    getPutRequest(url,obj) {
+        return this._addBody(this._addHeaders(new Request(this.base_url + url, this.options.PUT)), obj);
+    }
+
+    /** Add headers to a request
+    */
+    _addHeaders(request) {
+        request.headers = new Headers(this.headers);
+        return request;
+    }
+
+    /** Add body to a request
+    */
+    _addBody(request, body) {
+        debug('_addBody', body);
+        request.body = typeof body === 'string' ? body :  JSON.stringify(body);
+        return request;
+    }
+
+    /** Create a store using this client 
+    *
+    * @param endpoint {String} path component relative to the base url specified in the constructor.
+    * @param type {Function} constructor for objects in the store. (must have fromJSON static method)
+    * @param index_map {IndexMap} map indexes to request parameters
+    */
+    getStore(endpoint, type, index_map) {
+        return new Store(this, endpoint, type, index_map);
     }
 }
 
 /** the public API of this module. */
-module.exports = Store;
+module.exports = { Client, Store, IndexMap, DoesNotExist };
 
