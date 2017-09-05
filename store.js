@@ -296,7 +296,7 @@ class Client {
     * @returns fetch API request
     */
     getGetRequest(url) {
-        return this._addHeaders(new Request(this.base_url + url, this.options.GET));
+        return new Request(this.base_url + url, this._addHeaders(Object.assign({}, this.options.GET)));
     }
 
     /** Get a delete request
@@ -306,7 +306,7 @@ class Client {
     * @returns fetch API request
     */
     getDeleteRequest(url) {
-        return new Request(this.base_url + url, this._addHeaders(this.options.DELETE));
+        return new Request(this.base_url + url, this._addHeaders(Object.assign({}, this.options.DELETE)));
     }
 
     /** Get a post request
@@ -317,7 +317,7 @@ class Client {
     * @returns fetch API request
     */
     getPostRequest(url,obj) {
-        return this._addBody(this._addHeaders(new Request(this.base_url + url, this.options.POST)), obj);
+        return new Request(this.base_url + url, this._addBody(this._addHeaders(Object.assign({},this.options.POST)), obj));
     }
 
     /** Get a put request
@@ -328,7 +328,7 @@ class Client {
     * @returns fetch API request
     */
     getPutRequest(url,obj) {
-        return this._addBody(this._addHeaders(new Request(this.base_url + url, this.options.PUT)), obj);
+        return new Request(this.base_url + url, this._addBody(this._addHeaders(Object.assign({},this.options.PUT)), obj));
     }
 
     /** Add headers to a request
