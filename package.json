@@ -1,6 +1,6 @@
 {
   "name": "db-plumbing-rest",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Simple REST client for document store",
   "main": "store.js",
   "scripts": {

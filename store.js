@@ -273,7 +273,7 @@ class Client {
     /** Utility function for creating bearer authoriztion Http header (e.g. for use with JWT)
     */ 
     static getBearerAuthHeader(token) {
-        return { Authorizaton: 'Bearer ' + token };
+        return { Authorization: 'Bearer ' + token };
     }
     
     /** Constructor
