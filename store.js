@@ -3,7 +3,7 @@
  */
 'use strict';
 
-require('isomorphic-fetch')
+require('isomorphic-fetch');
 
 const debug = require('debug')('db-plumbing-rest');
 const debugResponses = require('debug')('db-plumbing-rest~response');
@@ -180,7 +180,7 @@ class Store {
     }
     
     _multipleResourceURI(op, index, value) {
-        debug('>>>', index.name, this.index_map)
+        debug('_multipleResourceURI', index.name, this.index_map);
         return `${this.endpoint}/${op}/${index.name}?${this.index_map[index.name](value)}`;
     }
 
@@ -287,6 +287,16 @@ class Client {
         this.base_url = base_url;
         this.options = Object.assign({}, DEFAULT_OPTIONS, options);
         this.headers = Object.assign({}, DEFAULT_HEADERS, headers);
+    }
+
+    /** Update request headers
+     *
+     * New headers are merged with existing headers.
+     *
+     * @param headers to merge.
+     */
+    updateHeaders(headers) {
+        Object.assign(this.headers, headers);
     }
 
     /** Get a get request
